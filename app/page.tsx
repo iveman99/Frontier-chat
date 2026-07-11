@@ -190,18 +190,18 @@ export default function Page() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let raw = ""; // everything we receive, for fallback / diagnostics
       let acc = "";
+      let sawSSE = false;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
+      const flushLines = (chunkStr: string) => {
+        buffer += chunkStr;
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
         for (const line of lines) {
           const trimmed = line.trim();
           if (!trimmed.startsWith("data:")) continue;
+          sawSSE = true;
           const dataStr = trimmed.slice(5).trim();
           if (!dataStr || dataStr === "[DONE]") continue;
           try {
@@ -211,18 +211,69 @@ export default function Page() {
               acc += chunk;
               updateLastAssistant(acc);
             } else if (evt.type === "error" || evt.error) {
-              throw new Error(evt.error?.message || "Stream error.");
+              throw new Error(
+                evt.error?.message || evt.error || "Stream error."
+              );
             }
           } catch (e) {
-            if (e instanceof Error && e.message === "Stream error.") throw e;
+            if (e instanceof Error && e.message.startsWith("Stream error"))
+              throw e;
+            if (e instanceof Error && e.message !== "Unexpected end of JSON input" &&
+                !(e instanceof SyntaxError)) {
+              throw e;
+            }
             // otherwise ignore keep-alive / partial-JSON noise
           }
+        }
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true });
+        raw += text;
+        flushLines(text);
+      }
+
+      // If the upstream ignored stream:true and sent one JSON body (no SSE),
+      // parse the whole thing as a normal completion response.
+      if (!acc && !sawSSE) {
+        const whole = raw.trim();
+        try {
+          const obj = JSON.parse(whole);
+          const full = extractFull(obj);
+          if (full) {
+            acc = full;
+            updateLastAssistant(acc);
+          } else if (obj?.error) {
+            throw new Error(
+              typeof obj.error === "string"
+                ? obj.error
+                : obj.error?.message || JSON.stringify(obj.error)
+            );
+          }
+        } catch (e) {
+          if (e instanceof Error && !(e instanceof SyntaxError)) throw e;
+          // Not JSON we understand — surface the raw text so we can see it.
         }
       }
 
       if (!acc) {
         updateLastAssistant("");
-        setError("The model returned an empty response. Try again.");
+        const preview = raw.trim().slice(0, 400);
+        setError(
+          preview
+            ? `Couldn't read the model's reply. Raw response: ${preview}`
+            : "The model returned an empty response. Try again."
+        );
+        // drop empty placeholder
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last && last.role === "assistant" && last.text === "") {
+            return prev.slice(0, -1);
+          }
+          return prev;
+        });
       }
     } catch (err) {
       const aborted = err instanceof DOMException && err.name === "AbortError";
@@ -621,6 +672,29 @@ function extractDelta(evt: any): string {
     if (typeof choice.text === "string") return choice.text; // legacy completions
     if (typeof choice.message?.content === "string") return choice.message.content;
   }
+  return "";
+}
+
+// Extract text from a COMPLETE (non-streaming) response body.
+function extractFull(obj: any): string {
+  // Anthropic messages: { content: [{ type:"text", text }] }
+  if (Array.isArray(obj?.content)) {
+    const t = obj.content
+      .filter((b: any) => b?.type === "text" && typeof b.text === "string")
+      .map((b: any) => b.text)
+      .join("");
+    if (t) return t;
+  }
+  // OpenAI chat: { choices:[{ message:{ content } }] }
+  const choice = obj?.choices?.[0];
+  if (choice) {
+    if (typeof choice.message?.content === "string") return choice.message.content;
+    if (typeof choice.text === "string") return choice.text;
+    if (typeof choice.delta?.content === "string") return choice.delta.content;
+  }
+  // Some proxies: { content: "..." } or { text: "..." }
+  if (typeof obj?.content === "string") return obj.content;
+  if (typeof obj?.text === "string") return obj.text;
   return "";
 }
 
