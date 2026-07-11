@@ -12,14 +12,26 @@ import {
 
 /* ---------- Model list (from AgentRouter) ---------- */
 const MODELS = [
-  { id: "claude-opus-4-8", label: "Claude Opus 4.8", short: "Opus 4.8", vision: true, tag: "Anthropic" },
-  { id: "claude-opus-4-7", label: "Claude Opus 4.7", short: "Opus 4.7", vision: true, tag: "Anthropic" },
-  { id: "claude-opus-4-6", label: "Claude Opus 4.6", short: "Opus 4.6", vision: true, tag: "Anthropic" },
-  { id: "gpt-5.5", label: "GPT-5.5", short: "GPT-5.5", vision: false, tag: "OpenAI" },
-  { id: "glm-5.2", label: "GLM-5.2", short: "GLM-5.2", vision: false, tag: "Zhipu AI" },
+  { id: "claude-opus-4-8", label: "Claude Opus 4.8", short: "Opus 4.8", vision: true, tag: "Anthropic", blurb: "Best for coding, research & long documents", strengths: ["Coding", "Research", "Vision", "Long context"] },
+  { id: "claude-opus-4-7", label: "Claude Opus 4.7", short: "Opus 4.7", vision: true, tag: "Anthropic", blurb: "Balanced reasoning with vision support", strengths: ["Coding", "Reasoning", "Vision"] },
+  { id: "claude-opus-4-6", label: "Claude Opus 4.6", short: "Opus 4.6", vision: true, tag: "Anthropic", blurb: "Reliable all-rounder with vision", strengths: ["Writing", "Analysis", "Vision"] },
+  { id: "gpt-5.5", label: "GPT-5.5", short: "GPT-5.5", vision: false, tag: "OpenAI", blurb: "Fast, creative & strong general reasoning", strengths: ["Creative", "Reasoning", "Fast"] },
+  { id: "glm-5.2", label: "GLM-5.2", short: "GLM-5.2", vision: false, tag: "Zhipu AI", blurb: "Efficient multilingual generalist", strengths: ["Multilingual", "General", "Fast"] },
 ];
 
-const BUILD_DATE = "July 2026";
+const SUGGESTED_PROMPTS = [
+  { icon: "✨", label: "Explain RAG simply", text: "Explain Retrieval-Augmented Generation (RAG) simply, with an analogy." },
+  { icon: "⚡", label: "Write SQL", text: "Write a SQL query to find the top 5 customers by total order value." },
+  { icon: "⚛️", label: "Generate a React component", text: "Generate a clean, accessible React button component with variants." },
+  { icon: "🐍", label: "Debug Python", text: "Help me debug a Python function — I'll paste it. Ask me for the code and the error." },
+];
+
+const APP_VERSION = "v1.2";
+const LINKS = {
+  portfolio: "https://iveman99.github.io/iveman/",
+  linkedin: "https://www.linkedin.com/in/veman-chippa",
+  github: "https://github.com/iVeman99",
+};
 
 // The proxy Worker URL. Set NEXT_PUBLIC_PROXY_URL in Vercel to your deployed
 // Cloudflare Worker. Users can also override it in Settings. The browser calls
@@ -56,6 +68,7 @@ export default function Page() {
   const [error, setError] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [showOnboard, setShowOnboard] = useState(false);
+  const [toast, setToast] = useState("");
   const [loaded, setLoaded] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -299,6 +312,7 @@ export default function Page() {
   const saveSettings = (key: string, sys: string, name: string, proxy: string) => {
     const nm = name.trim();
     const px = proxy.trim();
+    const wasOnboard = showOnboard;
     setApiKey(key);
     setSystem(sys);
     setUserName(nm);
@@ -311,24 +325,28 @@ export default function Page() {
     setShowSettings(false);
     setShowOnboard(false);
     setError("");
+    showToast(wasOnboard ? `Welcome, ${nm}! You're all set.` : "Settings saved");
+  };
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    window.setTimeout(() => setToast(""), 2600);
   };
 
   const initials = useMemo(() => initialsOf(userName), [userName]);
 
   return (
     <div className="app">
-      {/* Ambient background glow */}
-      <div className="bg-orbs" aria-hidden>
-        <span className="orb orb-1" />
-        <span className="orb orb-2" />
-        <span className="orb orb-3" />
-      </div>
+      {/* Ambient background */}
+      <div className="bg-grid" aria-hidden />
+      <div className="bg-glow" aria-hidden />
 
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark">iV</span>
-          <span className="brand-text">
-            iveman<span className="dot">·</span>UI
+          <span className="brand-mark">◉</span>
+          <span className="brand-block">
+            <span className="brand-text">Frontier Hub</span>
+            <span className="brand-sub">by iVeman</span>
           </span>
         </div>
 
@@ -341,8 +359,8 @@ export default function Page() {
           >
             {MODELS.map((m) => (
               <option key={m.id} value={m.id}>
-                {m.label}
-                {m.vision ? "  ·  🖼 vision" : ""}
+                {m.label} · {m.tag}
+                {m.vision ? " · 🖼" : ""}
               </option>
             ))}
           </select>
@@ -375,32 +393,66 @@ export default function Page() {
 
       <div className="messages" ref={scrollRef}>
         {messages.length === 0 && (
-          <div className="empty">
-            <div className="empty-badge">iV</div>
-            <h2>
+          <div className="hero">
+            <div className="hero-badge">◉</div>
+            <h1 className="hero-title">
               {userName ? (
                 <>
-                  Welcome, <span className="grad-text">{userName}</span>
+                  Welcome back, <span className="accent">{userName}</span>
                 </>
               ) : (
-                <>Chat with frontier models</>
+                <>
+                  Access the world&apos;s best <span className="accent">AI models</span>
+                </>
               )}
-            </h2>
-            <p>Pick a model above, type a message, and press Enter.</p>
-            <div className="chips">
+            </h1>
+            <p className="hero-sub">
+              One interface. Bring your own key. Switch frontier models instantly.
+            </p>
+
+            <div className="model-badges">
               {MODELS.map((m) => (
                 <button
                   key={m.id}
-                  className={`chip ${m.id === model ? "active" : ""}`}
+                  className={`model-badge ${m.id === model ? "active" : ""}`}
                   onClick={() => setModel(m.id)}
+                  title={m.blurb}
                 >
-                  {m.short}
+                  <span className="mb-name">{m.short}</span>
+                  <span className="mb-tag">{m.tag}</span>
                 </button>
               ))}
             </div>
-            <p className="muted small">
-              Your API key stays in your browser only. Models with 🖼 accept images.
-            </p>
+
+            <div className="active-card">
+              <div className="ac-head">
+                <span className="ac-name">{activeModel.label}</span>
+                <span className="ac-provider">{activeModel.tag}</span>
+              </div>
+              <p className="ac-blurb">{activeModel.blurb}</p>
+              <div className="ac-strengths">
+                {activeModel.strengths.map((s) => (
+                  <span className="ac-chip" key={s}>
+                    {s}
+                  </span>
+                ))}
+                {activeModel.vision && <span className="ac-chip vision">🖼 Vision</span>}
+              </div>
+            </div>
+
+            <div className="suggest-label">Try a prompt</div>
+            <div className="suggestions">
+              {SUGGESTED_PROMPTS.map((p) => (
+                <button
+                  key={p.label}
+                  className="suggestion"
+                  onClick={() => setInput(p.text)}
+                >
+                  <span className="sg-icon">{p.icon}</span>
+                  <span className="sg-label">{p.label}</span>
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
@@ -412,7 +464,7 @@ export default function Page() {
             <div key={i} className={`msg ${m.role}`}>
               <div className="msg-head">
                 {m.role === "assistant" ? (
-                  <span className="avatar ai">iV</span>
+                  <span className="avatar ai">◉</span>
                 ) : (
                   <span className="avatar you">{initials}</span>
                 )}
@@ -471,7 +523,7 @@ export default function Page() {
           </button>
           <textarea
             className="prompt"
-            placeholder={`Message ${activeModel.label}…`}
+            placeholder="Ask anything…"
             value={input}
             onChange={(e) => {
               setInput(e.target.value);
@@ -497,12 +549,33 @@ export default function Page() {
           )}
         </div>
         <div className="foot">
-          <span>Enter to send · Shift+Enter for new line</span>
+          <span className="foot-hint">
+            Enter to send · Shift+Enter for new line
+          </span>
           <span className="foot-brand">
-            Designed & built for <b>iVeman</b> · {BUILD_DATE}
+            <span>
+              Made with <span className="heart">♥</span> by <b>iVeman</b>
+            </span>
+            <a href={LINKS.portfolio} target="_blank" rel="noreferrer">
+              Portfolio
+            </a>
+            <a href={LINKS.linkedin} target="_blank" rel="noreferrer">
+              LinkedIn
+            </a>
+            <a href={LINKS.github} target="_blank" rel="noreferrer">
+              GitHub
+            </a>
+            <span className="foot-ver">{APP_VERSION}</span>
           </span>
         </div>
       </div>
+
+      {toast && (
+        <div className="toast">
+          <span className="toast-check">✓</span>
+          {toast}
+        </div>
+      )}
 
       {(showOnboard || showSettings) && (
         <SettingsModal
@@ -572,8 +645,8 @@ function SettingsModal({
   return (
     <div className="overlay" onClick={canClose ? onClose : undefined}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-mark">iV</div>
-        <h2>{onboard ? "Welcome to iveman·UI" : "Settings"}</h2>
+        <div className="modal-mark">◉</div>
+        <h2>{onboard ? "Welcome to Frontier Hub" : "Settings"}</h2>
         <p>
           {onboard
             ? "Enter your name and AgentRouter key to start. Everything stays in your browser."
