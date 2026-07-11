@@ -63,12 +63,13 @@ export default function Page() {
       const n = localStorage.getItem(LS_NAME);
       const m = localStorage.getItem(LS_MODEL);
       const s = localStorage.getItem(LS_SYSTEM);
-      const h = localStorage.getItem(LS_HISTORY);
       if (k) setApiKey(k);
       if (n) setUserName(n);
       if (m && MODELS.some((x) => x.id === m)) setModel(m);
       if (s) setSystem(s);
-      if (h) setMessages(JSON.parse(h));
+      // Each new session starts with a fresh, empty chat — we intentionally do
+      // NOT restore old messages. Clear any leftover history from before.
+      localStorage.removeItem(LS_HISTORY);
       // New session / new user → onboard if we don't know who they are or have no key.
       if (!n || !k) setShowOnboard(true);
     } catch {
@@ -81,15 +82,6 @@ export default function Page() {
   useEffect(() => {
     if (loaded) localStorage.setItem(LS_MODEL, model);
   }, [model, loaded]);
-
-  useEffect(() => {
-    if (!loaded) return;
-    try {
-      localStorage.setItem(LS_HISTORY, JSON.stringify(messages.slice(-100)));
-    } catch {
-      /* quota — ignore */
-    }
-  }, [messages, loaded]);
 
   /* ---------- Auto-scroll ---------- */
   useEffect(() => {
@@ -175,106 +167,37 @@ export default function Page() {
         signal: controller.signal,
       });
 
-      if (!res.ok || !res.body) {
-        let msg = `Request failed (${res.status}).`;
-        try {
-          const data = await res.json();
-          if (data?.error)
-            msg = typeof data.error === "string" ? data.error : JSON.stringify(data.error);
-        } catch {
-          /* ignore */
-        }
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        const msg =
+          (data && (typeof data.error === "string" ? data.error : data?.error?.message)) ||
+          `Request failed (${res.status}).`;
         throw new Error(msg);
       }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let raw = ""; // everything we receive, for fallback / diagnostics
-      let acc = "";
-      let sawSSE = false;
+      const full = typeof data?.text === "string" ? data.text : "";
+      if (!full) {
+        const msg =
+          (data && (typeof data.error === "string" ? data.error : data?.error?.message)) ||
+          "The model returned an empty response. Try again.";
+        throw new Error(msg);
+      }
 
-      const flushLines = (chunkStr: string) => {
-        buffer += chunkStr;
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith("data:")) continue;
-          sawSSE = true;
-          const dataStr = trimmed.slice(5).trim();
-          if (!dataStr || dataStr === "[DONE]") continue;
-          try {
-            const evt = JSON.parse(dataStr);
-            const chunk = extractDelta(evt);
-            if (chunk) {
-              acc += chunk;
-              updateLastAssistant(acc);
-            } else if (evt.type === "error" || evt.error) {
-              throw new Error(
-                evt.error?.message || evt.error || "Stream error."
-              );
-            }
-          } catch (e) {
-            if (e instanceof Error && e.message.startsWith("Stream error"))
-              throw e;
-            if (e instanceof Error && e.message !== "Unexpected end of JSON input" &&
-                !(e instanceof SyntaxError)) {
-              throw e;
-            }
-            // otherwise ignore keep-alive / partial-JSON noise
-          }
+      // Typewriter reveal so it still feels live.
+      const total = full.length;
+      const step = Math.max(2, Math.round(total / 240)); // ~240 frames max
+      let shown = 0;
+      while (shown < total) {
+        if (controller.signal.aborted) {
+          updateLastAssistant(full);
+          break;
         }
-      };
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const text = decoder.decode(value, { stream: true });
-        raw += text;
-        flushLines(text);
+        shown = Math.min(total, shown + step);
+        updateLastAssistant(full.slice(0, shown));
+        await sleep(12);
       }
-
-      // If the upstream ignored stream:true and sent one JSON body (no SSE),
-      // parse the whole thing as a normal completion response.
-      if (!acc && !sawSSE) {
-        const whole = raw.trim();
-        try {
-          const obj = JSON.parse(whole);
-          const full = extractFull(obj);
-          if (full) {
-            acc = full;
-            updateLastAssistant(acc);
-          } else if (obj?.error) {
-            throw new Error(
-              typeof obj.error === "string"
-                ? obj.error
-                : obj.error?.message || JSON.stringify(obj.error)
-            );
-          }
-        } catch (e) {
-          if (e instanceof Error && !(e instanceof SyntaxError)) throw e;
-          // Not JSON we understand — surface the raw text so we can see it.
-        }
-      }
-
-      if (!acc) {
-        updateLastAssistant("");
-        const preview = raw.trim().slice(0, 400);
-        setError(
-          preview
-            ? `Couldn't read the model's reply. Raw response: ${preview}`
-            : "The model returned an empty response. Try again."
-        );
-        // drop empty placeholder
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (last && last.role === "assistant" && last.text === "") {
-            return prev.slice(0, -1);
-          }
-          return prev;
-        });
-      }
+      updateLastAssistant(full);
     } catch (err) {
       const aborted = err instanceof DOMException && err.name === "AbortError";
       if (!aborted) {
@@ -651,51 +574,8 @@ function SettingsModal({
 
 /* ---------- Helpers ---------- */
 
-// Handle BOTH Anthropic and OpenAI streaming shapes.
-function extractDelta(evt: any): string {
-  // Anthropic: { type: "content_block_delta", delta: { type:"text_delta", text } }
-  if (
-    evt?.type === "content_block_delta" &&
-    evt.delta?.type === "text_delta" &&
-    typeof evt.delta.text === "string"
-  ) {
-    return evt.delta.text;
-  }
-  // Anthropic (some proxies): { type:"message_delta", delta:{ text } }
-  if (typeof evt?.delta?.text === "string" && evt.type !== "content_block_delta") {
-    return evt.delta.text;
-  }
-  // OpenAI chat completions: { choices:[{ delta:{ content } }] }
-  const choice = evt?.choices?.[0];
-  if (choice) {
-    if (typeof choice.delta?.content === "string") return choice.delta.content;
-    if (typeof choice.text === "string") return choice.text; // legacy completions
-    if (typeof choice.message?.content === "string") return choice.message.content;
-  }
-  return "";
-}
-
-// Extract text from a COMPLETE (non-streaming) response body.
-function extractFull(obj: any): string {
-  // Anthropic messages: { content: [{ type:"text", text }] }
-  if (Array.isArray(obj?.content)) {
-    const t = obj.content
-      .filter((b: any) => b?.type === "text" && typeof b.text === "string")
-      .map((b: any) => b.text)
-      .join("");
-    if (t) return t;
-  }
-  // OpenAI chat: { choices:[{ message:{ content } }] }
-  const choice = obj?.choices?.[0];
-  if (choice) {
-    if (typeof choice.message?.content === "string") return choice.message.content;
-    if (typeof choice.text === "string") return choice.text;
-    if (typeof choice.delta?.content === "string") return choice.delta.content;
-  }
-  // Some proxies: { content: "..." } or { text: "..." }
-  if (typeof obj?.content === "string") return obj.content;
-  if (typeof obj?.text === "string") return obj.text;
-  return "";
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 function initialsOf(name: string): string {
