@@ -21,6 +21,10 @@ const MODELS = [
 
 const BUILD_DATE = "July 2026";
 
+// AgentRouter's Anthropic-compatible endpoint. We call it directly from the
+// browser (see the send() function for why).
+const BASE_URL = "https://agentrouter.org";
+
 /* ---------- Types ---------- */
 type ImagePart = { type: "image"; media_type: string; data: string };
 type ChatMessage = {
@@ -155,33 +159,66 @@ export default function Page() {
     abortRef.current = controller;
 
     try {
-      const res = await fetch("/api/chat", {
+      // Call AgentRouter DIRECTLY from the browser.
+      //
+      // Why not a server proxy? AgentRouter sits behind Aliyun WAF, which blocks
+      // datacenter IPs (Vercel/Railway/Render). A server-side call gets an HTML
+      // bot-challenge page instead of the API. Calling from the browser uses the
+      // user's own residential IP, which the WAF allows. AgentRouter sends
+      // permissive CORS headers (Allow-Origin: *), so this is allowed.
+      const payload: Record<string, unknown> = {
+        model,
+        max_tokens: 4096,
+        messages: buildApiMessages(history),
+        stream: false,
+      };
+      if (system.trim()) payload.system = system;
+
+      const res = await fetch(`${BASE_URL}/v1/messages`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          apiKey,
-          model,
-          system,
-          messages: buildApiMessages(history),
-        }),
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify(payload),
         signal: controller.signal,
       });
 
-      const data = await res.json().catch(() => null);
+      const rawText = await res.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        /* non-JSON handled below */
+      }
 
       if (!res.ok) {
         const msg =
           (data && (typeof data.error === "string" ? data.error : data?.error?.message)) ||
-          `Request failed (${res.status}).`;
+          extractHttpError(rawText, res.status);
         throw new Error(msg);
       }
 
-      const full = typeof data?.text === "string" ? data.text : "";
+      if (!data) {
+        throw new Error(
+          `Unexpected reply from AgentRouter: ${rawText.slice(0, 300)}`
+        );
+      }
+      if (data?.error) {
+        throw new Error(
+          typeof data.error === "string"
+            ? data.error
+            : data.error?.message || JSON.stringify(data.error)
+        );
+      }
+
+      const full = extractText(data);
       if (!full) {
-        const msg =
-          (data && (typeof data.error === "string" ? data.error : data?.error?.message)) ||
-          "The model returned an empty response. Try again.";
-        throw new Error(msg);
+        throw new Error(
+          `Model replied but no text was found. Raw: ${rawText.slice(0, 300)}`
+        );
       }
 
       // Typewriter reveal so it still feels live.
@@ -576,6 +613,44 @@ function SettingsModal({
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// Pull assistant text out of a complete (non-streaming) response body,
+// handling both Anthropic and OpenAI shapes.
+function extractText(data: any): string {
+  // Anthropic messages: { content: [{ type:"text", text }] }
+  if (Array.isArray(data?.content)) {
+    const t = data.content
+      .filter((b: any) => b?.type === "text" && typeof b.text === "string")
+      .map((b: any) => b.text)
+      .join("");
+    if (t) return t;
+  }
+  // OpenAI chat completions: { choices:[{ message:{ content } }] }
+  const choice = data?.choices?.[0];
+  if (choice) {
+    if (typeof choice.message?.content === "string") return choice.message.content;
+    if (typeof choice.text === "string") return choice.text;
+    if (Array.isArray(choice.message?.content)) {
+      const t = choice.message.content
+        .map((p: any) => (typeof p === "string" ? p : p?.text || ""))
+        .join("");
+      if (t) return t;
+    }
+  }
+  if (typeof data?.content === "string") return data.content;
+  if (typeof data?.text === "string") return data.text;
+  return "";
+}
+
+// Build a readable error when the body isn't the JSON we expect (e.g. a WAF
+// HTML page).
+function extractHttpError(raw: string, status: number): string {
+  const t = raw.trim();
+  if (/aliyun_waf|<!doctype|<html/i.test(t)) {
+    return "AgentRouter blocked this request (firewall). Try again, or check that your network isn't on a blocklist.";
+  }
+  return t ? `${status}: ${t.slice(0, 200)}` : `Request failed (${status}).`;
 }
 
 function initialsOf(name: string): string {
