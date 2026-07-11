@@ -21,9 +21,11 @@ const MODELS = [
 
 const BUILD_DATE = "July 2026";
 
-// AgentRouter's Anthropic-compatible endpoint. We call it directly from the
-// browser (see the send() function for why).
-const BASE_URL = "https://agentrouter.org";
+// The proxy Worker URL. Set NEXT_PUBLIC_PROXY_URL in Vercel to your deployed
+// Cloudflare Worker. Users can also override it in Settings. The browser calls
+// this Worker, which injects the Claude-CLI User-Agent and forwards to
+// AgentRouter from a non-WAF-blocked IP (a direct browser call can't do either).
+const ENV_PROXY = (process.env.NEXT_PUBLIC_PROXY_URL || "").trim();
 
 /* ---------- Types ---------- */
 type ImagePart = { type: "image"; media_type: string; data: string };
@@ -39,10 +41,12 @@ const LS_MODEL = "iveman.model";
 const LS_SYSTEM = "iveman.system";
 const LS_HISTORY = "iveman.history";
 const LS_NAME = "iveman.userName";
+const LS_PROXY = "iveman.proxyUrl";
 
 export default function Page() {
   const [apiKey, setApiKey] = useState("");
   const [userName, setUserName] = useState("");
+  const [proxyUrl, setProxyUrl] = useState(ENV_PROXY);
   const [model, setModel] = useState(MODELS[0].id);
   const [system, setSystem] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -67,10 +71,12 @@ export default function Page() {
       const n = localStorage.getItem(LS_NAME);
       const m = localStorage.getItem(LS_MODEL);
       const s = localStorage.getItem(LS_SYSTEM);
+      const px = localStorage.getItem(LS_PROXY);
       if (k) setApiKey(k);
       if (n) setUserName(n);
       if (m && MODELS.some((x) => x.id === m)) setModel(m);
       if (s) setSystem(s);
+      if (px) setProxyUrl(px); // saved override beats env default
       // Each new session starts with a fresh, empty chat — we intentionally do
       // NOT restore old messages. Clear any leftover history from before.
       localStorage.removeItem(LS_HISTORY);
@@ -159,13 +165,20 @@ export default function Page() {
     abortRef.current = controller;
 
     try {
-      // Call AgentRouter DIRECTLY from the browser.
+      // Send through the proxy Worker.
       //
-      // Why not a server proxy? AgentRouter sits behind Aliyun WAF, which blocks
-      // datacenter IPs (Vercel/Railway/Render). A server-side call gets an HTML
-      // bot-challenge page instead of the API. Calling from the browser uses the
-      // user's own residential IP, which the WAF allows. AgentRouter sends
-      // permissive CORS headers (Allow-Origin: *), so this is allowed.
+      // AgentRouter blocks browsers directly: it requires a CLI User-Agent
+      // (browsers can't set that) and its WAF blocks datacenter IPs. The
+      // Cloudflare Worker at proxyUrl injects the Claude-CLI User-Agent and
+      // forwards from a non-blocked edge IP, with CORS so the browser can call
+      // it. The user's key goes in the Authorization header, straight through.
+      const target = (proxyUrl || "").trim();
+      if (!target) {
+        throw new Error(
+          "No proxy URL configured. Open Settings and paste your Cloudflare Worker URL (see the README to create one in ~2 minutes)."
+        );
+      }
+
       const payload: Record<string, unknown> = {
         model,
         max_tokens: 4096,
@@ -174,13 +187,12 @@ export default function Page() {
       };
       if (system.trim()) payload.system = system;
 
-      const res = await fetch(`${BASE_URL}/v1/messages`, {
+      const res = await fetch(target, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           authorization: `Bearer ${apiKey}`,
           "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
         },
         body: JSON.stringify(payload),
         signal: controller.signal,
@@ -284,14 +296,18 @@ export default function Page() {
     localStorage.removeItem(LS_HISTORY);
   };
 
-  const saveSettings = (key: string, sys: string, name: string) => {
+  const saveSettings = (key: string, sys: string, name: string, proxy: string) => {
     const nm = name.trim();
+    const px = proxy.trim();
     setApiKey(key);
     setSystem(sys);
     setUserName(nm);
+    setProxyUrl(px);
     localStorage.setItem(LS_KEY, key);
     localStorage.setItem(LS_SYSTEM, sys);
     if (nm) localStorage.setItem(LS_NAME, nm);
+    if (px) localStorage.setItem(LS_PROXY, px);
+    else localStorage.removeItem(LS_PROXY);
     setShowSettings(false);
     setShowOnboard(false);
     setError("");
@@ -494,6 +510,8 @@ export default function Page() {
           initialKey={apiKey}
           initialSystem={system}
           initialName={userName}
+          initialProxy={proxyUrl}
+          proxyFromEnv={!!ENV_PROXY}
           onSave={saveSettings}
           onClose={() => {
             setShowSettings(false);
@@ -523,6 +541,8 @@ function SettingsModal({
   initialKey,
   initialSystem,
   initialName,
+  initialProxy,
+  proxyFromEnv,
   onSave,
   onClose,
   canClose,
@@ -531,23 +551,32 @@ function SettingsModal({
   initialKey: string;
   initialSystem: string;
   initialName: string;
-  onSave: (key: string, system: string, name: string) => void;
+  initialProxy: string;
+  proxyFromEnv: boolean;
+  onSave: (key: string, system: string, name: string, proxy: string) => void;
   onClose: () => void;
   canClose: boolean;
 }) {
   const [key, setKey] = useState(initialKey);
   const [sys, setSys] = useState(initialSystem);
   const [name, setName] = useState(initialName);
+  const [proxy, setProxy] = useState(initialProxy);
   const onboard = mode === "onboard";
+
+  // If the owner baked in a proxy URL (env var), friends never need to see it.
+  // Show the field only in Settings, or in onboarding when there's no proxy yet.
+  const needsProxy = !proxyFromEnv && !initialProxy;
+  const showProxyField = !onboard || needsProxy;
+  const canSave = key.trim() && name.trim() && (proxyFromEnv || proxy.trim());
 
   return (
     <div className="overlay" onClick={canClose ? onClose : undefined}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-mark">iV</div>
-        <h2>{onboard ? "Welcome to iveman·UI" : "Your profile & settings"}</h2>
+        <h2>{onboard ? "Welcome to iveman·UI" : "Settings"}</h2>
         <p>
           {onboard
-            ? "Tell us your name and paste your AgentRouter key to start. Everything stays in your browser."
+            ? "Enter your name and AgentRouter key to start. Everything stays in your browser."
             : "Your key is stored only in this browser and sent straight to the model."}
         </p>
 
@@ -561,7 +590,7 @@ function SettingsModal({
             autoFocus={onboard}
             maxLength={40}
           />
-          <small>Shown on your messages so friends know who's who.</small>
+          <small>Shown on your messages so friends know who&apos;s who.</small>
         </div>
 
         <div className="field">
@@ -573,13 +602,29 @@ function SettingsModal({
             placeholder="sk-..."
           />
           <small>
-            Get one at{" "}
+            Get one free at{" "}
             <a href="https://agentrouter.org" target="_blank" rel="noreferrer">
               agentrouter.org
             </a>
             . It never leaves your device except to call the model.
           </small>
         </div>
+
+        {showProxyField && (
+          <div className="field">
+            <label>Proxy URL {needsProxy ? "" : "(advanced)"}</label>
+            <input
+              type="text"
+              value={proxy}
+              onChange={(e) => setProxy(e.target.value)}
+              placeholder="https://your-worker.workers.dev"
+            />
+            <small>
+              Your Cloudflare Worker URL. Required to reach AgentRouter from the
+              web (see the README to deploy one in ~2 minutes).
+            </small>
+          </div>
+        )}
 
         <div className="field">
           <label>System prompt (optional)</label>
@@ -598,8 +643,8 @@ function SettingsModal({
           )}
           <button
             className="btn-primary"
-            onClick={() => onSave(key.trim(), sys, name)}
-            disabled={!key.trim() || !name.trim()}
+            onClick={() => onSave(key.trim(), sys, name, proxy)}
+            disabled={!canSave}
           >
             {onboard ? "Start chatting →" : "Save"}
           </button>
