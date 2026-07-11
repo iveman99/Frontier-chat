@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -11,18 +12,21 @@ import {
 
 /* ---------- Model list (from AgentRouter) ---------- */
 const MODELS = [
-  { id: "claude-opus-4-8", label: "Claude Opus 4.8", vision: true },
-  { id: "claude-opus-4-7", label: "Claude Opus 4.7", vision: true },
-  { id: "claude-opus-4-6", label: "Claude Opus 4.6", vision: true },
-  { id: "gpt-5.5", label: "GPT-5.5", vision: false },
-  { id: "glm-5.2", label: "GLM-5.2", vision: false },
+  { id: "claude-opus-4-8", label: "Claude Opus 4.8", short: "Opus 4.8", vision: true, tag: "Anthropic" },
+  { id: "claude-opus-4-7", label: "Claude Opus 4.7", short: "Opus 4.7", vision: true, tag: "Anthropic" },
+  { id: "claude-opus-4-6", label: "Claude Opus 4.6", short: "Opus 4.6", vision: true, tag: "Anthropic" },
+  { id: "gpt-5.5", label: "GPT-5.5", short: "GPT-5.5", vision: false, tag: "OpenAI" },
+  { id: "glm-5.2", label: "GLM-5.2", short: "GLM-5.2", vision: false, tag: "Zhipu AI" },
 ];
+
+const BUILD_DATE = "July 2026";
 
 /* ---------- Types ---------- */
 type ImagePart = { type: "image"; media_type: string; data: string };
 type ChatMessage = {
   role: "user" | "assistant";
   text: string;
+  model?: string; // which model produced an assistant reply
   images?: ImagePart[]; // only on user messages
 };
 
@@ -30,9 +34,11 @@ const LS_KEY = "iveman.apiKey";
 const LS_MODEL = "iveman.model";
 const LS_SYSTEM = "iveman.system";
 const LS_HISTORY = "iveman.history";
+const LS_NAME = "iveman.userName";
 
 export default function Page() {
   const [apiKey, setApiKey] = useState("");
+  const [userName, setUserName] = useState("");
   const [model, setModel] = useState(MODELS[0].id);
   const [system, setSystem] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -41,6 +47,7 @@ export default function Page() {
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const [showOnboard, setShowOnboard] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -53,14 +60,17 @@ export default function Page() {
   useEffect(() => {
     try {
       const k = localStorage.getItem(LS_KEY);
+      const n = localStorage.getItem(LS_NAME);
       const m = localStorage.getItem(LS_MODEL);
       const s = localStorage.getItem(LS_SYSTEM);
       const h = localStorage.getItem(LS_HISTORY);
       if (k) setApiKey(k);
+      if (n) setUserName(n);
       if (m && MODELS.some((x) => x.id === m)) setModel(m);
       if (s) setSystem(s);
       if (h) setMessages(JSON.parse(h));
-      if (!k) setShowSettings(true); // first visit → prompt for key
+      // New session / new user → onboard if we don't know who they are or have no key.
+      if (!n || !k) setShowOnboard(true);
     } catch {
       /* ignore */
     }
@@ -104,7 +114,7 @@ export default function Page() {
       };
       reader.readAsDataURL(file);
     });
-    e.target.value = ""; // allow re-selecting same file
+    e.target.value = "";
   }, []);
 
   const removeImage = (idx: number) =>
@@ -116,14 +126,9 @@ export default function Page() {
       if (m.role === "assistant" || !m.images?.length) {
         return { role: m.role, content: m.text };
       }
-      // user message with images → content blocks
       const content: unknown[] = m.images.map((img) => ({
         type: "image",
-        source: {
-          type: "base64",
-          media_type: img.media_type,
-          data: img.data,
-        },
+        source: { type: "base64", media_type: img.media_type, data: img.data },
       }));
       if (m.text.trim()) content.push({ type: "text", text: m.text });
       return { role: m.role, content };
@@ -137,7 +142,7 @@ export default function Page() {
     if (!text && pendingImages.length === 0) return;
 
     if (!apiKey) {
-      setShowSettings(true);
+      setShowOnboard(true);
       setError("Add your AgentRouter API key first.");
       return;
     }
@@ -149,7 +154,7 @@ export default function Page() {
       images: pendingImages.length ? pendingImages : undefined,
     };
     const history = [...messages, userMsg];
-    setMessages([...history, { role: "assistant", text: "" }]);
+    setMessages([...history, { role: "assistant", text: "", model: activeModel.id }]);
     setInput("");
     setPendingImages([]);
     setStreaming(true);
@@ -174,7 +179,8 @@ export default function Page() {
         let msg = `Request failed (${res.status}).`;
         try {
           const data = await res.json();
-          if (data?.error) msg = typeof data.error === "string" ? data.error : JSON.stringify(data.error);
+          if (data?.error)
+            msg = typeof data.error === "string" ? data.error : JSON.stringify(data.error);
         } catch {
           /* ignore */
         }
@@ -191,7 +197,6 @@ export default function Page() {
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
-        // Parse SSE lines
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
         for (const line of lines) {
@@ -201,22 +206,16 @@ export default function Page() {
           if (!dataStr || dataStr === "[DONE]") continue;
           try {
             const evt = JSON.parse(dataStr);
-            // Anthropic streaming events
-            if (
-              evt.type === "content_block_delta" &&
-              evt.delta?.type === "text_delta" &&
-              typeof evt.delta.text === "string"
-            ) {
-              acc += evt.delta.text;
+            const chunk = extractDelta(evt);
+            if (chunk) {
+              acc += chunk;
               updateLastAssistant(acc);
-            } else if (evt.type === "error") {
+            } else if (evt.type === "error" || evt.error) {
               throw new Error(evt.error?.message || "Stream error.");
             }
           } catch (e) {
-            // ignore keep-alive / non-JSON lines; rethrow real errors
-            if (e instanceof Error && e.message !== "Unexpected end of JSON input") {
-              // swallow parse noise, surface nothing
-            }
+            if (e instanceof Error && e.message === "Stream error.") throw e;
+            // otherwise ignore keep-alive / partial-JSON noise
           }
         }
       }
@@ -230,7 +229,6 @@ export default function Page() {
       if (!aborted) {
         const msg = err instanceof Error ? err.message : "Something went wrong.";
         setError(cleanError(msg));
-        // remove the empty assistant placeholder on hard failure
         setMessages((prev) => {
           const last = prev[prev.length - 1];
           if (last && last.role === "assistant" && last.text === "") {
@@ -243,7 +241,7 @@ export default function Page() {
       setStreaming(false);
       abortRef.current = null;
     }
-  }, [apiKey, model, system, input, pendingImages, messages, streaming]);
+  }, [apiKey, model, system, input, pendingImages, messages, streaming, activeModel.id]);
 
   function updateLastAssistant(text: string) {
     setMessages((prev) => {
@@ -275,79 +273,141 @@ export default function Page() {
     localStorage.removeItem(LS_HISTORY);
   };
 
-  /* ---------- Settings save ---------- */
-  const saveSettings = (key: string, sys: string) => {
+  const saveSettings = (key: string, sys: string, name: string) => {
+    const nm = name.trim();
     setApiKey(key);
     setSystem(sys);
+    setUserName(nm);
     localStorage.setItem(LS_KEY, key);
     localStorage.setItem(LS_SYSTEM, sys);
+    if (nm) localStorage.setItem(LS_NAME, nm);
     setShowSettings(false);
+    setShowOnboard(false);
     setError("");
   };
 
+  const initials = useMemo(() => initialsOf(userName), [userName]);
+
   return (
     <div className="app">
+      {/* Ambient background glow */}
+      <div className="bg-orbs" aria-hidden>
+        <span className="orb orb-1" />
+        <span className="orb orb-2" />
+        <span className="orb orb-3" />
+      </div>
+
       <header className="topbar">
         <div className="brand">
-          iveman<span>·</span>UI
+          <span className="brand-mark">iV</span>
+          <span className="brand-text">
+            iveman<span className="dot">·</span>UI
+          </span>
         </div>
-        <select
-          className="model-select"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          title="Choose a model"
-        >
-          {MODELS.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label}
-              {m.vision ? "  🖼" : ""}
-            </option>
-          ))}
-        </select>
-        <span className={`key-badge ${apiKey ? "" : "missing"}`}>
-          {apiKey ? "key set" : "no key"}
-        </span>
+
+        <div className="model-wrap">
+          <select
+            className="model-select"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            title="Choose a model"
+          >
+            {MODELS.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+                {m.vision ? "  ·  🖼 vision" : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+
         <div className="spacer" />
+
         {messages.length > 0 && (
           <button className="icon-btn subtle" onClick={clearChat} title="Clear chat">
-            🗑 <span className="label">Clear</span>
+            <span className="label">Clear</span>
           </button>
         )}
-        <button className="icon-btn" onClick={() => setShowSettings(true)}>
-          ⚙ <span className="label">Settings</span>
+
+        {userName && (
+          <button
+            className="user-chip"
+            onClick={() => setShowSettings(true)}
+            title="Your profile & settings"
+          >
+            <span className="avatar sm">{initials}</span>
+            <span className="user-name">{userName}</span>
+          </button>
+        )}
+
+        <button className="icon-btn" onClick={() => setShowSettings(true)} title="Settings">
+          <span className="gear">⚙</span>
+          <span className="label">Settings</span>
         </button>
       </header>
 
       <div className="messages" ref={scrollRef}>
         {messages.length === 0 && (
           <div className="empty">
-            <h2>Chat with frontier models</h2>
+            <div className="empty-badge">iV</div>
+            <h2>
+              {userName ? (
+                <>
+                  Welcome, <span className="grad-text">{userName}</span>
+                </>
+              ) : (
+                <>Chat with frontier models</>
+              )}
+            </h2>
             <p>Pick a model above, type a message, and press Enter.</p>
-            <p>
-              Your API key stays in your browser only. Models marked 🖼 accept
-              image uploads.
+            <div className="chips">
+              {MODELS.map((m) => (
+                <button
+                  key={m.id}
+                  className={`chip ${m.id === model ? "active" : ""}`}
+                  onClick={() => setModel(m.id)}
+                >
+                  {m.short}
+                </button>
+              ))}
+            </div>
+            <p className="muted small">
+              Your API key stays in your browser only. Models with 🖼 accept images.
             </p>
           </div>
         )}
 
-        {messages.map((m, i) => (
-          <div key={i} className={`msg ${m.role}`}>
-            <div className="role">{m.role === "user" ? "You" : activeModel.label}</div>
-            <div className="bubble">
-              {m.images?.map((img, j) => (
-                <img
-                  key={j}
-                  src={`data:${img.media_type};base64,${img.data}`}
-                  alt="attachment"
-                />
-              ))}
-              {m.text}
-              {streaming &&
-                i === messages.length - 1 &&
-                m.role === "assistant" && <span className="cursor" />}
+        {messages.map((m, i) => {
+          const mdl = MODELS.find((x) => x.id === m.model);
+          const isStreamingLast =
+            streaming && i === messages.length - 1 && m.role === "assistant";
+          return (
+            <div key={i} className={`msg ${m.role}`}>
+              <div className="msg-head">
+                {m.role === "assistant" ? (
+                  <span className="avatar ai">iV</span>
+                ) : (
+                  <span className="avatar you">{initials}</span>
+                )}
+                <span className="msg-name">
+                  {m.role === "user" ? userName || "You" : mdl?.label || "Assistant"}
+                </span>
+              </div>
+              <div className="bubble">
+                {m.images?.map((img, j) => (
+                  <img
+                    key={j}
+                    src={`data:${img.media_type};base64,${img.data}`}
+                    alt="attachment"
+                  />
+                ))}
+                {m.text}
+                {isStreamingLast && !m.text && <TypingDots />}
+                {isStreamingLast && m.text && <span className="cursor" />}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
 
         {error && <div className="error-banner">{error}</div>}
       </div>
@@ -357,10 +417,7 @@ export default function Page() {
           <div className="attachments">
             {pendingImages.map((img, i) => (
               <div className="thumb" key={i}>
-                <img
-                  src={`data:${img.media_type};base64,${img.data}`}
-                  alt="pending"
-                />
+                <img src={`data:${img.media_type};base64,${img.data}`} alt="pending" />
                 <button onClick={() => removeImage(i)} title="Remove">
                   ×
                 </button>
@@ -381,11 +438,7 @@ export default function Page() {
           <button
             className="attach-btn"
             onClick={() => fileRef.current?.click()}
-            title={
-              activeModel.vision
-                ? "Attach image"
-                : "This model may not support images"
-            }
+            title={activeModel.vision ? "Attach image" : "This model may not support images"}
           >
             +
           </button>
@@ -402,7 +455,7 @@ export default function Page() {
             rows={1}
           />
           {streaming ? (
-            <button className="send-btn" onClick={stop} title="Stop">
+            <button className="send-btn stop" onClick={stop} title="Stop">
               ■
             </button>
           ) : (
@@ -416,46 +469,89 @@ export default function Page() {
             </button>
           )}
         </div>
-        <div className="hint">
-          Enter to send · Shift+Enter for new line
+        <div className="foot">
+          <span>Enter to send · Shift+Enter for new line</span>
+          <span className="foot-brand">
+            Designed & built for <b>iVeman</b> · {BUILD_DATE}
+          </span>
         </div>
       </div>
 
-      {showSettings && (
+      {(showOnboard || showSettings) && (
         <SettingsModal
+          mode={showOnboard ? "onboard" : "settings"}
           initialKey={apiKey}
           initialSystem={system}
+          initialName={userName}
           onSave={saveSettings}
-          onClose={() => setShowSettings(false)}
-          canClose={!!apiKey}
+          onClose={() => {
+            setShowSettings(false);
+            if (apiKey && userName) setShowOnboard(false);
+          }}
+          canClose={!!apiKey && !!userName}
         />
       )}
     </div>
   );
 }
 
-/* ---------- Settings Modal ---------- */
+/* ---------- Typing indicator ---------- */
+function TypingDots() {
+  return (
+    <span className="typing">
+      <span />
+      <span />
+      <span />
+    </span>
+  );
+}
+
+/* ---------- Settings / Onboarding Modal ---------- */
 function SettingsModal({
+  mode,
   initialKey,
   initialSystem,
+  initialName,
   onSave,
   onClose,
   canClose,
 }: {
+  mode: "onboard" | "settings";
   initialKey: string;
   initialSystem: string;
-  onSave: (key: string, system: string) => void;
+  initialName: string;
+  onSave: (key: string, system: string, name: string) => void;
   onClose: () => void;
   canClose: boolean;
 }) {
   const [key, setKey] = useState(initialKey);
   const [sys, setSys] = useState(initialSystem);
+  const [name, setName] = useState(initialName);
+  const onboard = mode === "onboard";
 
   return (
     <div className="overlay" onClick={canClose ? onClose : undefined}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Settings</h2>
-        <p>Your key is stored only in this browser and sent directly to the model.</p>
+        <div className="modal-mark">iV</div>
+        <h2>{onboard ? "Welcome to iveman·UI" : "Your profile & settings"}</h2>
+        <p>
+          {onboard
+            ? "Tell us your name and paste your AgentRouter key to start. Everything stays in your browser."
+            : "Your key is stored only in this browser and sent straight to the model."}
+        </p>
+
+        <div className="field">
+          <label>Your name</label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Aarav"
+            autoFocus={onboard}
+            maxLength={40}
+          />
+          <small>Shown on your messages so friends know who's who.</small>
+        </div>
 
         <div className="field">
           <label>AgentRouter API Key</label>
@@ -464,10 +560,9 @@ function SettingsModal({
             value={key}
             onChange={(e) => setKey(e.target.value)}
             placeholder="sk-..."
-            autoFocus
           />
           <small>
-            Get a key at{" "}
+            Get one at{" "}
             <a href="https://agentrouter.org" target="_blank" rel="noreferrer">
               agentrouter.org
             </a>
@@ -480,7 +575,7 @@ function SettingsModal({
           <textarea
             value={sys}
             onChange={(e) => setSys(e.target.value)}
-            placeholder="e.g. You are a helpful assistant that answers concisely."
+            placeholder="e.g. You are a concise, helpful assistant."
           />
         </div>
 
@@ -492,10 +587,10 @@ function SettingsModal({
           )}
           <button
             className="btn-primary"
-            onClick={() => onSave(key.trim(), sys)}
-            disabled={!key.trim()}
+            onClick={() => onSave(key.trim(), sys, name)}
+            disabled={!key.trim() || !name.trim()}
           >
-            Save
+            {onboard ? "Start chatting →" : "Save"}
           </button>
         </div>
       </div>
@@ -504,8 +599,40 @@ function SettingsModal({
 }
 
 /* ---------- Helpers ---------- */
+
+// Handle BOTH Anthropic and OpenAI streaming shapes.
+function extractDelta(evt: any): string {
+  // Anthropic: { type: "content_block_delta", delta: { type:"text_delta", text } }
+  if (
+    evt?.type === "content_block_delta" &&
+    evt.delta?.type === "text_delta" &&
+    typeof evt.delta.text === "string"
+  ) {
+    return evt.delta.text;
+  }
+  // Anthropic (some proxies): { type:"message_delta", delta:{ text } }
+  if (typeof evt?.delta?.text === "string" && evt.type !== "content_block_delta") {
+    return evt.delta.text;
+  }
+  // OpenAI chat completions: { choices:[{ delta:{ content } }] }
+  const choice = evt?.choices?.[0];
+  if (choice) {
+    if (typeof choice.delta?.content === "string") return choice.delta.content;
+    if (typeof choice.text === "string") return choice.text; // legacy completions
+    if (typeof choice.message?.content === "string") return choice.message.content;
+  }
+  return "";
+}
+
+function initialsOf(name: string): string {
+  const n = name.trim();
+  if (!n) return "?";
+  const parts = n.split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
 function cleanError(raw: string): string {
-  // Try to extract a human message from a JSON error body.
   try {
     const parsed = JSON.parse(raw);
     if (parsed?.error?.message) return parsed.error.message;
