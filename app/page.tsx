@@ -68,6 +68,7 @@ export default function Page() {
   const [error, setError] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const [showOnboard, setShowOnboard] = useState(false);
+  const [showSetup, setShowSetup] = useState(false);
   const [toast, setToast] = useState("");
   const [loaded, setLoaded] = useState(false);
 
@@ -385,6 +386,11 @@ export default function Page() {
           </button>
         )}
 
+        <button className="icon-btn" onClick={() => setShowSetup(true)} title="Use in Claude Code / Desktop">
+          <span className="gear">⌘</span>
+          <span className="label">Setup</span>
+        </button>
+
         <button className="icon-btn" onClick={() => setShowSettings(true)} title="Settings">
           <span className="gear">⚙</span>
           <span className="label">Settings</span>
@@ -593,6 +599,8 @@ export default function Page() {
           canClose={!!apiKey && !!userName}
         />
       )}
+
+      {showSetup && <SetupModal onClose={() => setShowSetup(false)} onCopy={showToast} />}
     </div>
   );
 }
@@ -722,6 +730,222 @@ function SettingsModal({
             {onboard ? "Start chatting →" : "Save"}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Setup / Configure Modal ---------- */
+type SetupTab = "cli" | "desktop" | "cursor";
+
+function SetupModal({
+  onClose,
+  onCopy,
+}: {
+  onClose: () => void;
+  onCopy: (msg: string) => void;
+}) {
+  const [tab, setTab] = useState<SetupTab>("cli");
+
+  const copy = (text: string) => {
+    navigator.clipboard?.writeText(text).then(
+      () => onCopy("Copied to clipboard"),
+      () => onCopy("Copy failed — select manually")
+    );
+  };
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div className="modal setup-modal" onClick={(e) => e.stopPropagation()}>
+        <button className="modal-x" onClick={onClose} title="Close">
+          ×
+        </button>
+        <h2>Use these models in your own tools</h2>
+        <p>
+          Prefer working in a terminal or editor? Point any Claude-compatible
+          tool at AgentRouter with your API key. Pick your tool below.
+        </p>
+
+        <div className="setup-tabs">
+          <button
+            className={`setup-tab ${tab === "cli" ? "active" : ""}`}
+            onClick={() => setTab("cli")}
+          >
+            Claude Code (CLI)
+          </button>
+          <button
+            className={`setup-tab ${tab === "desktop" ? "active" : ""}`}
+            onClick={() => setTab("desktop")}
+          >
+            Claude Desktop
+          </button>
+          <button
+            className={`setup-tab ${tab === "cursor" ? "active" : ""}`}
+            onClick={() => setTab("cursor")}
+          >
+            Cursor / VS Code
+          </button>
+        </div>
+
+        {tab === "cli" && (
+          <div className="setup-body">
+            <Step n={1} title="Install Claude Code">
+              <CodeBlock
+                onCopy={copy}
+                code={`npm install -g @anthropic-ai/claude-code@latest`}
+              />
+            </Step>
+            <Step n={2} title="Set your AgentRouter key & endpoint">
+              <p className="setup-note">
+                Get a free key at{" "}
+                <a href="https://agentrouter.org" target="_blank" rel="noreferrer">
+                  agentrouter.org
+                </a>
+                . Windows PowerShell:
+              </p>
+              <CodeBlock
+                onCopy={copy}
+                code={`$env:ANTHROPIC_AUTH_TOKEN="YOUR_AGENTROUTER_API_KEY"
+$env:ANTHROPIC_BASE_URL="https://agentrouter.org"
+$env:ANTHROPIC_MODEL="claude-opus-4-8"`}
+              />
+              <p className="setup-note">macOS / Linux:</p>
+              <CodeBlock
+                onCopy={copy}
+                code={`export ANTHROPIC_AUTH_TOKEN="YOUR_AGENTROUTER_API_KEY"
+export ANTHROPIC_BASE_URL="https://agentrouter.org"
+export ANTHROPIC_MODEL="claude-opus-4-8"`}
+              />
+            </Step>
+            <Step n={3} title="Start Claude Code">
+              <CodeBlock onCopy={copy} code={`claude`} />
+              <p className="setup-note">
+                That&apos;s it — you&apos;re now running frontier models in your
+                terminal. Swap <code>ANTHROPIC_MODEL</code> for any model below.
+              </p>
+            </Step>
+            <ModelIds onCopy={copy} />
+          </div>
+        )}
+
+        {tab === "desktop" && (
+          <div className="setup-body">
+            <Step n={1} title="Install Claude Desktop">
+              <p className="setup-note">
+                Download the desktop app from{" "}
+                <a href="https://claude.ai/download" target="_blank" rel="noreferrer">
+                  claude.ai/download
+                </a>{" "}
+                (Windows / macOS).
+              </p>
+            </Step>
+            <Step n={2} title="Set environment variables before launching">
+              <p className="setup-note">
+                Claude Desktop reads the same variables. Set them, then launch the
+                app from that same terminal. Windows PowerShell:
+              </p>
+              <CodeBlock
+                onCopy={copy}
+                code={`$env:ANTHROPIC_AUTH_TOKEN="YOUR_AGENTROUTER_API_KEY"
+$env:ANTHROPIC_BASE_URL="https://agentrouter.org"
+& "$env:LOCALAPPDATA\\Programs\\claude\\Claude.exe"`}
+              />
+              <p className="setup-note">macOS:</p>
+              <CodeBlock
+                onCopy={copy}
+                code={`export ANTHROPIC_AUTH_TOKEN="YOUR_AGENTROUTER_API_KEY"
+export ANTHROPIC_BASE_URL="https://agentrouter.org"
+open -a Claude`}
+              />
+            </Step>
+            <ModelIds onCopy={copy} />
+          </div>
+        )}
+
+        {tab === "cursor" && (
+          <div className="setup-body">
+            <Step n={1} title="Open model settings">
+              <p className="setup-note">
+                In Cursor: <b>Settings → Models</b>. Enable{" "}
+                <b>Override OpenAI/Anthropic Base URL</b> and add a custom
+                Anthropic model.
+              </p>
+            </Step>
+            <Step n={2} title="Point it at AgentRouter">
+              <p className="setup-note">Base URL:</p>
+              <CodeBlock onCopy={copy} code={`https://agentrouter.org`} />
+              <p className="setup-note">API key: your AgentRouter key.</p>
+              <CodeBlock onCopy={copy} code={`YOUR_AGENTROUTER_API_KEY`} />
+            </Step>
+            <Step n={3} title="Add a model id">
+              <p className="setup-note">
+                Add one of the model ids below as a custom model, then select it in
+                the chat.
+              </p>
+            </Step>
+            <ModelIds onCopy={copy} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Step({
+  n,
+  title,
+  children,
+}: {
+  n: number;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="setup-step">
+      <span className="setup-step-num">{n}</span>
+      <div className="setup-step-body">
+        <h4 className="setup-step-title">{title}</h4>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function CodeBlock({
+  code,
+  onCopy,
+}: {
+  code: string;
+  onCopy: (text: string) => void;
+}) {
+  return (
+    <div className="code-block">
+      <pre>
+        <code>{code}</code>
+      </pre>
+      <button className="code-copy" onClick={() => onCopy(code)} title="Copy">
+        Copy
+      </button>
+    </div>
+  );
+}
+
+function ModelIds({ onCopy }: { onCopy: (text: string) => void }) {
+  return (
+    <div className="setup-models">
+      <div className="setup-models-title">Available model ids</div>
+      <div className="setup-model-list">
+        {MODELS.map((m) => (
+          <button
+            key={m.id}
+            className="setup-model-id"
+            onClick={() => onCopy(m.id)}
+            title="Copy model id"
+          >
+            <span className="smi-label">{m.label}</span>
+            <code>{m.id}</code>
+          </button>
+        ))}
       </div>
     </div>
   );

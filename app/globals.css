@@ -1056,3 +1056,193 @@ textarea.prompt {
     padding: 20px 14px 8px;
   }
 }
+
+/* ---------- Setup modal ---------- */
+.setup-modal {
+  max-width: 640px;
+  width: 100%;
+}
+.setup-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 4px 0 18px;
+  border-bottom: 1px solid var(--border);
+}
+.setup-tab {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-weight: 600;
+  font-size: 14px;
+  padding: 10px 14px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.setup-tab:hover {
+  color: var(--text);
+}
+.setup-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.setup-step {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.setup-step-num {
+  flex: 0 0 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 13px;
+  display: grid;
+  place-items: center;
+}
+.setup-step-body {
+  flex: 1;
+  min-width: 0;
+}
+.setup-step-body p {
+  margin: 3px 0 8px;
+  font-size: 14px;
+  color: var(--text);
+}
+.setup-step-body .muted {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.code-block {
+  position: relative;
+  background: var(--code-bg, #1e1b16);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  overflow-x: auto;
+}
+.code-block pre {
+  margin: 0;
+  font-family: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: #ffd9b0;
+  white-space: pre;
+}
+.code-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.code-copy:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+.setup-note {
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border, rgba(255, 122, 0, 0.25));
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 13px;
+  color: var(--text);
+  margin-top: 6px;
+}
+.setup-note b {
+  color: var(--accent);
+}
+.setup-note code,
+.setup-step-body code {
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-family: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.setup-step-title {
+  display: block;
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+.modal-x {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface, #fff);
+  color: var(--text-dim);
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.modal-x:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.setup-models {
+  margin-top: 18px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+.setup-models-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+.setup-model-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+}
+.setup-model-id {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  text-align: left;
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface, #fff);
+  border-radius: 10px;
+  padding: 9px 11px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.setup-model-id:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.smi-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.setup-model-id code {
+  font-family: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--accent);
+}
