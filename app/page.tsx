@@ -486,7 +486,11 @@ export default function Page() {
                     alt="attachment"
                   />
                 ))}
-                {m.text}
+                {m.role === "assistant" ? (
+                  <Markdown text={m.text} onCopy={showToast} />
+                ) : (
+                  <div className="user-text">{m.text}</div>
+                )}
                 {isStreamingLast && !m.text && <TypingDots />}
                 {isStreamingLast && m.text && <span className="cursor" />}
               </div>
@@ -602,6 +606,226 @@ export default function Page() {
 
       {showSetup && <SetupModal onClose={() => setShowSetup(false)} onCopy={showToast} />}
     </div>
+  );
+}
+
+/* ---------- Markdown renderer (no dependencies) ----------
+   Turns assistant text into formatted blocks: headings, bold/italic,
+   inline code, links, ordered/unordered lists, blockquotes, and fenced
+   code blocks with a copy button. Kept intentionally small and safe —
+   no raw HTML is ever injected. */
+function Markdown({ text, onCopy }: { text: string; onCopy: (t: string) => void }) {
+  const blocks = useMemo(() => parseBlocks(text), [text]);
+  return (
+    <div className="md">
+      {blocks.map((b, i) => {
+        if (b.type === "code") {
+          return <CodeBlock key={i} code={b.content} lang={b.lang} onCopy={onCopy} />;
+        }
+        if (b.type === "heading") {
+          const Tag = (`h${b.level}` as unknown) as keyof JSX.IntrinsicElements;
+          return (
+            <Tag key={i} className="md-h">
+              {renderInline(b.content)}
+            </Tag>
+          );
+        }
+        if (b.type === "quote") {
+          return (
+            <blockquote key={i} className="md-quote">
+              {b.lines.map((l, j) => (
+                <p key={j}>{renderInline(l)}</p>
+              ))}
+            </blockquote>
+          );
+        }
+        if (b.type === "ul") {
+          return (
+            <ul key={i} className="md-ul">
+              {b.items.map((it, j) => (
+                <li key={j}>{renderInline(it)}</li>
+              ))}
+            </ul>
+          );
+        }
+        if (b.type === "ol") {
+          return (
+            <ol key={i} className="md-ol">
+              {b.items.map((it, j) => (
+                <li key={j}>{renderInline(it)}</li>
+              ))}
+            </ol>
+          );
+        }
+        if (b.type === "hr") {
+          return <hr key={i} className="md-hr" />;
+        }
+        return (
+          <p key={i} className="md-p">
+            {renderInline(b.content)}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+type Block =
+  | { type: "code"; content: string; lang: string }
+  | { type: "heading"; level: number; content: string }
+  | { type: "quote"; lines: string[] }
+  | { type: "ul"; items: string[] }
+  | { type: "ol"; items: string[] }
+  | { type: "hr" }
+  | { type: "p"; content: string };
+
+function parseBlocks(src: string): Block[] {
+  const lines = src.replace(/\r\n/g, "\n").split("\n");
+  const blocks: Block[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Fenced code block
+    const fence = line.match(/^```(.*)$/);
+    if (fence) {
+      const lang = fence[1].trim();
+      const buf: string[] = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) {
+        buf.push(lines[i]);
+        i++;
+      }
+      i++; // skip closing fence
+      blocks.push({ type: "code", content: buf.join("\n"), lang });
+      continue;
+    }
+
+    // Blank line
+    if (!line.trim()) {
+      i++;
+      continue;
+    }
+
+    // Horizontal rule
+    if (/^(\s*)(---|\*\*\*|___)\s*$/.test(line)) {
+      blocks.push({ type: "hr" });
+      i++;
+      continue;
+    }
+
+    // Heading
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) {
+      blocks.push({ type: "heading", level: h[1].length, content: h[2].trim() });
+      i++;
+      continue;
+    }
+
+    // Blockquote
+    if (/^\s*>\s?/.test(line)) {
+      const buf: string[] = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        buf.push(lines[i].replace(/^\s*>\s?/, ""));
+        i++;
+      }
+      blocks.push({ type: "quote", lines: buf });
+      continue;
+    }
+
+    // Unordered list
+    if (/^\s*[-*+]\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*[-*+]\s+/, ""));
+        i++;
+      }
+      blocks.push({ type: "ul", items });
+      continue;
+    }
+
+    // Ordered list
+    if (/^\s*\d+[.)]\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+[.)]\s+/, ""));
+        i++;
+      }
+      blocks.push({ type: "ol", items });
+      continue;
+    }
+
+    // Paragraph (gather consecutive non-blank, non-special lines)
+    const buf: string[] = [line];
+    i++;
+    while (
+      i < lines.length &&
+      lines[i].trim() &&
+      !/^```/.test(lines[i]) &&
+      !/^(#{1,6})\s+/.test(lines[i]) &&
+      !/^\s*>\s?/.test(lines[i]) &&
+      !/^\s*[-*+]\s+/.test(lines[i]) &&
+      !/^\s*\d+[.)]\s+/.test(lines[i]) &&
+      !/^(\s*)(---|\*\*\*|___)\s*$/.test(lines[i])
+    ) {
+      buf.push(lines[i]);
+      i++;
+    }
+    blocks.push({ type: "p", content: buf.join("\n") });
+  }
+
+  return blocks;
+}
+
+// Inline formatting: **bold**, *italic*, `code`, [text](url). Returns React nodes.
+function renderInline(text: string): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  // Split on the first-matching token each pass.
+  const regex =
+    /(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(__([^_]+)__)|(_([^_]+)_)|(`([^`]+)`)|(\[([^\]]+)\]\(([^)\s]+)\))/;
+  let rest = text;
+  let key = 0;
+
+  while (rest) {
+    const m = rest.match(regex);
+    if (!m || m.index === undefined) {
+      nodes.push(splitLines(rest, key++));
+      break;
+    }
+    if (m.index > 0) {
+      nodes.push(splitLines(rest.slice(0, m.index), key++));
+    }
+    if (m[1]) nodes.push(<strong key={key++}>{m[2]}</strong>);
+    else if (m[3]) nodes.push(<em key={key++}>{m[4]}</em>);
+    else if (m[5]) nodes.push(<strong key={key++}>{m[6]}</strong>);
+    else if (m[7]) nodes.push(<em key={key++}>{m[8]}</em>);
+    else if (m[9]) nodes.push(<code key={key++} className="md-inline-code">{m[10]}</code>);
+    else if (m[11])
+      nodes.push(
+        <a key={key++} href={m[13]} target="_blank" rel="noreferrer" className="md-link">
+          {m[12]}
+        </a>
+      );
+    rest = rest.slice(m.index + m[0].length);
+  }
+
+  return nodes;
+}
+
+// Preserve single newlines within a paragraph as line breaks.
+function splitLines(text: string, key: number): React.ReactNode {
+  const parts = text.split("\n");
+  if (parts.length === 1) return <span key={key}>{text}</span>;
+  return (
+    <span key={key}>
+      {parts.map((p, i) => (
+        <span key={i}>
+          {p}
+          {i < parts.length - 1 && <br />}
+        </span>
+      ))}
+    </span>
   );
 }
 
@@ -914,17 +1138,26 @@ function Step({
 function CodeBlock({
   code,
   onCopy,
+  lang,
 }: {
   code: string;
   onCopy: (text: string) => void;
+  lang?: string;
 }) {
+  const [copied, setCopied] = useState(false);
+  const doCopy = () => {
+    onCopy(code);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
   return (
     <div className="code-block">
+      {lang ? <span className="code-lang">{lang}</span> : null}
       <pre>
         <code>{code}</code>
       </pre>
-      <button className="code-copy" onClick={() => onCopy(code)} title="Copy">
-        Copy
+      <button className="code-copy" onClick={doCopy} title="Copy">
+        {copied ? "Copied" : "Copy"}
       </button>
     </div>
   );
